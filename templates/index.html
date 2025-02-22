@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Detection</title>
+    <style>
+      body {
+        text-align: center;
+        font-family: Arial, sans-serif;
+      }
+      #video-container {
+        display: none;
+        margin-top: 20px;
+      }
+      img {
+        width: 750px;
+        height: 500px;
+        border: 2px solid black;
+      }
+
+      button {
+        font-size: 20px;
+        padding: 15px 30px;
+        border-radius: 10px;
+        border: none;
+        cursor: pointer;
+      }
+
+      #start-btn {
+        background-color: green;
+        color: white;
+      }
+
+      #stop-btn {
+        margin-right: 60%;
+        background-color: red;
+        color: white;
+      }
+
+      #stop-btn:disabled {
+        background-color: gray;
+        cursor: not-allowed;
+      }
+      #start-btn:disabled {
+        background-color: grey;
+        color: aliceblue;
+      }
+      #video-container {
+        margin-right: 60%;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Detection Interface</h1>
+    <button id="start-btn">Start Detection</button>
+    <button id="stop-btn" disabled>Stop Detection</button>
+
+    <div id="video-container">
+      <h3>Live Feed</h3>
+      <img id="video-frame" src="" alt="Live Feed" />
+    </div>
+
+    <script>
+      let socket;
+      document
+        .getElementById("start-btn")
+        .addEventListener("click", function () {
+          socket = new WebSocket("ws://localhost:8000/ws");
+          document.getElementById("video-container").style.display = "block";
+          document.getElementById("start-btn").disabled = true;
+          document.getElementById("stop-btn").disabled = false;
+
+          socket.onmessage = function (event) {
+            const blob = new Blob([event.data], { type: "image/jpeg" });
+            const url = URL.createObjectURL(blob);
+            document.getElementById("video-frame").src = url;
+          };
+
+          socket.onclose = function () {
+            document.getElementById("start-btn").disabled = false;
+            document.getElementById("stop-btn").disabled = true;
+            document.getElementById("video-container").style.display = "none";
+          };
+        });
+
+      document
+        .getElementById("stop-btn")
+        .addEventListener("click", function () {
+          if (socket) {
+            socket.close();
+          }
+        });
+    </script>
+  </body>
+</html>
