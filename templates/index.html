@@ -63,7 +63,7 @@
     </style>
   </head>
   <body>
-    <h1><u><a href="https://www.youtube.com/watch?v=2zvd1JQ0EKY" target="_blank">Detection Interface</a></u></h1>
+    <h1><u><a href="http://127.0.0.1:8000/" target="_blank">Detection Interface</a></u></h1>
     <button id="start-btn"><b>Start Detection</b></button>
     <button id="stop-btn" disabled><b>Stop Detection</b></button>
 
@@ -74,8 +74,7 @@
         <b><p id="jump-count">Jumps: 0</p>
         <p id="crouch-count">Squats: 0</p>
         <p id="tpose-count">T-Pose: 0</p>
-        <p id="bend-left-count">Bend Left: 0</p>
-        <p id="bend-right-count">Bend Right: 0</p></b>
+        
       </div>
     </div>
 
@@ -117,16 +116,11 @@
             
             document.getElementById(
               "crouch-count"
-            ).innerText = `Crouches: ${data.crouch_count}`;
+            ).innerText = `squats: ${data.crouch_count}`;
             document.getElementById(
               "tpose-count"
             ).innerText = `T-Pose: ${data.tpose_count}`;
-            document.getElementById(
-              "bend-left-count"
-            ).innerText = `Bend Left: ${data.bend_left_count}`;
-            document.getElementById(
-              "bend-right-count"
-            ).innerText = `Bend Right: ${data.bend_right_count}`;
+            
           };
 
           socket.onclose = function () {
