@@ -36,6 +36,7 @@ crouch_delay = 1.0
 crouch_start_time = 0 
 crouch_started = False
 last_crouch_time = 0
+jump_threshold=0.05
 
 def detect_hand_orientation(hand_landmarks):
     wrist = hand_landmarks.landmark[mp_hands.HandLandmark.WRIST]
@@ -51,12 +52,15 @@ def draw_threshold_lines(frame, height, width):
 def process_frame(frame, pose, hands, prev_hip_y):
     global last_crouch_time, crouch_start_time, crouch_started
     global jump_count, crouch_count, t_pose_count, bend_left_count, bend_right_count
+    height = 0 
+    jump_ref_y = int(0.1 * height)
 
     height, width, _ = frame.shape
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     pose_results = pose.process(rgb_frame)
     hand_results = hands.process(rgb_frame)
     draw_threshold_lines(frame, height, width)
+    cv2.line(frame, (0, jump_ref_y), (width, jump_ref_y), (255, 0, 0), 2)
 
     if pose_results.pose_landmarks:
         mp_drawing.draw_landmarks(frame, pose_results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
@@ -102,13 +106,18 @@ def process_frame(frame, pose, hands, prev_hip_y):
 
         cv2.putText(frame, f"Squats: {crouch_count}", (width - 250, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-        # Jump detection
-        if prev_hip_y is not None and avg_hip_y < prev_hip_y - JUMP_THRESHOLD:
+        # Jump 
+        if prev_hip_y is not None and avg_hip_y < prev_hip_y - jump_threshold:
+            cv2.putText(frame, "Jumping", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 20, 0), 2)
             jump_count += 1
             cv2.putText(frame, f"Jumping: {jump_count}", (width - 250, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 20, 0), 2)
 
-        # T-pose detection
-        if abs(left_wrist.y - left_shoulder.y) < T_POSE_THRESHOLD and abs(right_wrist.y - right_shoulder.y) < T_POSE_THRESHOLD:
+        # T-pose 
+        arm_span = abs(left_wrist.x - right_wrist.x)  
+        shoulder_span = abs(left_shoulder.x - right_shoulder.x)
+
+        if arm_span > shoulder_span * 2:  
+            cv2.putText(frame, "T-Pose Detected", (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
             t_pose_count += 1
             cv2.putText(frame, f"T-Pose: {t_pose_count}", (width - 250, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
 
