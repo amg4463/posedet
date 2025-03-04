@@ -90,6 +90,8 @@ def process_frame(frame, pose, hands, prev_hip_y):
         mp_drawing.draw_landmarks(frame, pose_results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
         landmarks = pose_results.pose_landmarks.landmark
 
+        
+        nose_x = int(landmarks[mp_pose.PoseLandmark.NOSE].x * width)
         left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
         right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER]
         left_hip = landmarks[mp_pose.PoseLandmark.LEFT_HIP]
@@ -104,17 +106,23 @@ def process_frame(frame, pose, hands, prev_hip_y):
         crouch_ref_y = int(CROUCH_THRESHOLD * height)
         cv2.line(frame, (0, chest_y), (width, chest_y), (0, 0, 255), 2)
 
-        upper_body_center = (left_shoulder.x + right_shoulder.x) / 2
-        lower_body_center = (left_hip.x + right_hip.x) / 2
+        upper_body_center = (nose_x + int(left_shoulder.x * width) + int(right_shoulder.x * width)) // 3
+        lower_body_center = (int(left_hip.x * width) + int(right_hip.x * width)) // 2
 
-        # if upper_body_center < lower_body_center - BEND_THRESHOLD:
-        #     bend_left_count += 1
-        #     cv2.putText(frame, f"Bending Left: {bend_left_count}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-        # elif upper_body_center > lower_body_center + BEND_THRESHOLD:
-        #     bend_right_count += 1
-        #     cv2.putText(frame, f"Bending Right: {bend_right_count}", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        # else:
-        #     cv2.putText(frame, "Standing Center", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+        cv2.line(frame, (upper_body_center, 0), (lower_body_center, height), (0, 255, 255), 3)
+
+        if upper_body_center < lower_body_center - 20:
+            send_to_serial("L")
+            cv2.putText(frame, "Bending Left", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        elif upper_body_center > lower_body_center + 20:
+            send_to_serial("R")
+            cv2.putText(frame, "Bending Right", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        else:
+            send_to_serial("C")
+            cv2.putText(frame, "Standing Center", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+
+        chest_y = int(avg_shoulder_y * height)
+        cv2.line(frame, (0, chest_y), (width, chest_y), (0, 0, 255), 2)
 
         # Squat detection based on chest position crossing threshold
         if chest_y >= crouch_ref_y:
