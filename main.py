@@ -8,10 +8,26 @@ import asyncio
 import numpy as np
 import base64
 import time
+import threading
+import serial
 
 app = FastAPI()
-
 templates = Jinja2Templates(directory="templates")
+
+# === SERIAL CONNECTION SETUP ===
+try:
+    ser = serial.Serial('COM5', 9600, timeout=1)  # Adjust COM port as needed
+    time.sleep(2)  # Allow serial connection to establish
+except serial.SerialException as e:
+    print(f"Serial Error: {e}")
+    ser = None  # Prevent errors if serial port fails
+
+# === SERIAL DATA READING FUNCTION ===
+def send_to_serial(message):
+    """Send movement detection messages to Br@y++ Terminal"""
+    if ser:
+        ser.write((message + "").encode())  # Send with newline
+        print(f"Sent to Br@y++: {message}")  # Also print for debugging
 
 mp_pose = mp.solutions.pose
 mp_hands = mp.solutions.hands
@@ -38,6 +54,11 @@ crouch_started = False
 last_crouch_time = 0
 jump_threshold=0.05
 
+
+
+
+
+
 def detect_hand_orientation(hand_landmarks):
     wrist = hand_landmarks.landmark[mp_hands.HandLandmark.WRIST]
     index_fingertip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
@@ -61,6 +82,9 @@ def process_frame(frame, pose, hands, prev_hip_y):
     hand_results = hands.process(rgb_frame)
     draw_threshold_lines(frame, height, width)
     cv2.line(frame, (0, jump_ref_y), (width, jump_ref_y), (255, 0, 0), 2)
+
+
+
 
     if pose_results.pose_landmarks:
         mp_drawing.draw_landmarks(frame, pose_results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
@@ -103,8 +127,11 @@ def process_frame(frame, pose, hands, prev_hip_y):
                     crouch_count += 1
                     last_crouch_time = time.time()
             crouch_started = False
+            send_to_serial("s\n")
 
+      
         cv2.putText(frame, f"Squats: {crouch_count}", (width - 250, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        
 
         # Jump 
         if prev_hip_y is not None and avg_hip_y < prev_hip_y - jump_threshold:
@@ -117,10 +144,13 @@ def process_frame(frame, pose, hands, prev_hip_y):
         shoulder_span = abs(left_shoulder.x - right_shoulder.x)
 
         if arm_span > shoulder_span * 2:  
-            cv2.putText(frame, "T-Pose Detected", (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+            cv2.putText(frame, "T-Pose ", (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+            send_to_serial("T\n")
             t_pose_count += 1
             cv2.putText(frame, f"T-Pose: {t_pose_count}", (width - 250, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
 
+        
+         
     return frame
 
 @app.websocket("/ws")
@@ -164,3 +194,5 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.get("/", response_class=HTMLResponse)
 async def get_home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
+
+##newwwwww##
