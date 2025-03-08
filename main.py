@@ -10,24 +10,35 @@ import base64
 import time
 import threading
 import serial
+import queue
 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
+frame_queue = queue.Queue(maxsize=5)  
+
+def capture_frames(cap):
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if frame_queue.full():
+            frame_queue.get()  
+        frame_queue.put(frame)
 
 # === SERIAL CONNECTION SETUP ===
 try:
-    ser = serial.Serial('COM5', 9600, timeout=1)  # Adjust COM port as needed
+    ser = serial.Serial('COM5', 9600, timeout=1)  
     time.sleep(2)  # Allow serial connection to establish
 except serial.SerialException as e:
     print(f"Serial Error: {e}")
-    ser = None  # Prevent errors if serial port fails
+    ser = None  
 
 # === SERIAL DATA READING FUNCTION ===
 def send_to_serial(message):
-    """Send movement detection messages to Br@y++ Terminal"""
+    
     if ser:
-        ser.write((message + "").encode())  # Send with newline
-        print(f"Sent to Br@y++: {message}")  # Also print for debugging
+        ser.write((message + "").encode())  
+        print(f"Sent to Br@y++: {message}")  
 
 mp_pose = mp.solutions.pose
 mp_hands = mp.solutions.hands
@@ -54,43 +65,52 @@ crouch_started = False
 last_crouch_time = 0
 jump_threshold=0.05
 
+def count_fingers(hand_landmarks, handedness):
+    finger_tips = [
+        mp_hands.HandLandmark.INDEX_FINGER_TIP,
+        mp_hands.HandLandmark.MIDDLE_FINGER_TIP,
+        mp_hands.HandLandmark.RING_FINGER_TIP,
+        mp_hands.HandLandmark.PINKY_TIP
+    ]
+    open_fingers = 0
 
+    thumb_tip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP]
+    thumb_ip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_IP]
+    
+    if (handedness == "Right" and thumb_tip.x < thumb_ip.x) or (handedness == "Left" and thumb_tip.x > thumb_ip.x):
+        open_fingers += 1
+        
 
+    
 
-
-
-def detect_hand_orientation(hand_landmarks):
-    wrist = hand_landmarks.landmark[mp_hands.HandLandmark.WRIST]
-    index_fingertip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
-    middle_fingertip = hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_TIP]
-    ring_fingertip = hand_landmarks.landmark[mp_hands.HandLandmark.RING_FINGER_TIP]
-    pinky_fingertip = hand_landmarks.landmark[mp_hands.HandLandmark.PINKY_TIP]
+    for tip in finger_tips:
+        if hand_landmarks.landmark[tip].y < hand_landmarks.landmark[tip - 2].y:
+            open_fingers += 1
+    
+    return open_fingers
 
 def draw_threshold_lines(frame, height, width):
     cv2.line(frame, (0, int(CROUCH_THRESHOLD * height)), (width, int(CROUCH_THRESHOLD * height)), (0, 0, 255), 2)
     cv2.line(frame, (width // 2, 0), (width // 2, height), (255, 255, 0), 2)
 
 def process_frame(frame, pose, hands, prev_hip_y):
-    global last_crouch_time, crouch_start_time, crouch_started
-    global jump_count, crouch_count, t_pose_count, bend_left_count, bend_right_count
     height = 0 
     jump_ref_y = int(0.1 * height)
-
+    global last_crouch_time, crouch_start_time, crouch_started
+    global jump_count, crouch_count, t_pose_count, bend_left_count, bend_right_count
     height, width, _ = frame.shape
+    
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     pose_results = pose.process(rgb_frame)
     hand_results = hands.process(rgb_frame)
     draw_threshold_lines(frame, height, width)
     cv2.line(frame, (0, jump_ref_y), (width, jump_ref_y), (255, 0, 0), 2)
 
-
-
-
     if pose_results.pose_landmarks:
         mp_drawing.draw_landmarks(frame, pose_results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
         landmarks = pose_results.pose_landmarks.landmark
 
-        
+
         nose_x = int(landmarks[mp_pose.PoseLandmark.NOSE].x * width)
         left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
         right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER]
@@ -111,54 +131,59 @@ def process_frame(frame, pose, hands, prev_hip_y):
 
         cv2.line(frame, (upper_body_center, 0), (lower_body_center, height), (0, 255, 255), 3)
 
-        if upper_body_center < lower_body_center - 20:
-            send_to_serial("L")
-            cv2.putText(frame, "Bending Left", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-        elif upper_body_center > lower_body_center + 20:
-            send_to_serial("R")
-            cv2.putText(frame, "Bending Right", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        else:
-            send_to_serial("C")
-            cv2.putText(frame, "Standing Center", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+    if hand_results.multi_hand_landmarks:
+        for hand_landmarks, classification in zip(hand_results.multi_hand_landmarks, hand_results.multi_handedness):
+            handedness = classification.classification[0].label  # "Right" or "Left"
+            fingers_open = count_fingers(hand_landmarks, handedness)
+            
+            text_position = (50, 300) if handedness == "Right" else (50, 350)
+            send_to_serial("H")
+            cv2.putText(frame, f"{handedness} Hand: {fingers_open} fingers", text_position, cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
 
+
+    if upper_body_center < lower_body_center - 20:
+        send_to_serial("L")
+        cv2.putText(frame, "Bending Left", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+    elif upper_body_center > lower_body_center + 20:
+        send_to_serial("R")
+        cv2.putText(frame, "Bending Right", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+    else:
+        send_to_serial("C")
+        cv2.putText(frame, "Standing Center", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
         chest_y = int(avg_shoulder_y * height)
         cv2.line(frame, (0, chest_y), (width, chest_y), (0, 0, 255), 2)
 
-        # Squat detection based on chest position crossing threshold
-        if chest_y >= crouch_ref_y:
-            if not crouch_started:
-                crouch_started = True
-                crouch_start_time = time.time()
-        elif crouch_started and chest_y < crouch_ref_y:
-            if time.time() - crouch_start_time >= crouch_hold_time:
-                if time.time() - last_crouch_time > crouch_delay:
-                    crouch_count += 1
-                    last_crouch_time = time.time()
-            crouch_started = False
-            send_to_serial("s\n")
+    if chest_y >= crouch_ref_y:
+        if not crouch_started:
+            crouch_started = True
+            crouch_start_time = time.time()
+    elif crouch_started and chest_y < crouch_ref_y:
+        if time.time() - crouch_start_time >= crouch_hold_time:
+            if time.time() - last_crouch_time > crouch_delay:
+                crouch_count += 1
+                last_crouch_time = time.time()
+        crouch_started = False
+        send_to_serial("s\n")
 
-      
-        cv2.putText(frame, f"Squats: {crouch_count}", (width - 250, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+    cv2.putText(frame, f"Squats: {crouch_count}", (width - 250, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         
 
         # Jump 
-        if prev_hip_y is not None and avg_hip_y < prev_hip_y - jump_threshold:
-            cv2.putText(frame, "Jumping", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 20, 0), 2)
-            jump_count += 1
-            cv2.putText(frame, f"Jumping: {jump_count}", (width - 250, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 20, 0), 2)
+    if prev_hip_y is not None and avg_hip_y < prev_hip_y - jump_threshold:
+        jump_count += 1
+        cv2.putText(frame, f"Jumping: {jump_count}", (width - 250, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 20, 0), 2)
 
         # T-pose 
-        arm_span = abs(left_wrist.x - right_wrist.x)  
-        shoulder_span = abs(left_shoulder.x - right_shoulder.x)
+    arm_span = abs(left_wrist.x - right_wrist.x)  
+    shoulder_span = abs(left_shoulder.x - right_shoulder.x)
 
-        if arm_span > shoulder_span * 2:  
-            cv2.putText(frame, "T-Pose ", (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
-            send_to_serial("T\n")
-            t_pose_count += 1
-            cv2.putText(frame, f"T-Pose: {t_pose_count}", (width - 250, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+    if arm_span > shoulder_span * 2:  
+        cv2.putText(frame, "T-Pose ", (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+        send_to_serial("T\n")
+        t_pose_count += 1
+        cv2.putText(frame, f"T-Pose: {t_pose_count}", (width - 250, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
 
-        
-         
+    
     return frame
 
 @app.websocket("/ws")
@@ -170,6 +195,8 @@ async def websocket_endpoint(websocket: WebSocket):
     pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
     hands = mp_hands.Hands(min_detection_confidence=0.5, min_tracking_confidence=0.5)
     prev_hip_y = None
+    capture_thread = threading.Thread(target=capture_frames, args=(cap,), daemon=True)
+    capture_thread.start()
 
     try:
         while True:
@@ -179,7 +206,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
             frame = cv2.flip(frame, 1)
             processed_frame = process_frame(frame, pose, hands, prev_hip_y)
-
+            
             _, buffer = cv2.imencode('.jpg', processed_frame)
             base64_image = base64.b64encode(buffer).decode('utf-8')
             
@@ -192,7 +219,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 "bend_right_count": bend_right_count
             })
 
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.04)
     
     except WebSocketDisconnect:
         print("WebSocket disconnected")
@@ -202,5 +229,3 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.get("/", response_class=HTMLResponse)
 async def get_home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
-
-##newwwwww##
