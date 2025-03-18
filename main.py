@@ -12,9 +12,35 @@ import threading
 import serial
 import queue
 
+left_shoulder_positions = []
+right_shoulder_positions = []
+DISPLACEMENT_THRESHOLD = 15 
+SMOOTHING_FACTOR = 0.2 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 frame_queue = queue.Queue(maxsize=5)  
+
+
+# def detect_circular_motion(positions, threshold=5):
+#     if len(positions) < threshold:
+#         return False
+    
+#     center_x = sum(p[0] for p in positions) / len(positions)
+#     center_y = sum(p[1] for p in positions) / len(positions)
+    
+#     radii = [((p[0] - center_x) ** 2 + (p[1] - center_y) ** 2) ** 0.5 for p in positions]
+#     avg_radius = sum(radii) / len(radii)
+    
+#     return all(abs(r - avg_radius) < avg_radius * 0.3 for r in radii)  # Increased tolerance
+def detect_circular_motion(positions, threshold=5):
+    if len(positions) < threshold:
+        return False
+    
+    x_disp = abs(positions[-1][0] - positions[0][0])
+    y_disp = abs(positions[-1][1] - positions[0][1])
+    
+    return x_disp > DISPLACEMENT_THRESHOLD and y_disp > DISPLACEMENT_THRESHOLD
+
 
 def capture_frames(cap):
     while True:
@@ -25,7 +51,6 @@ def capture_frames(cap):
             frame_queue.get()  
         frame_queue.put(frame)
 
-# === SERIAL CONNECTION SETUP ===
 try:
     ser = serial.Serial('COM5', 9600, timeout=1)  
     time.sleep(2)  # Allow serial connection to establish
@@ -33,7 +58,6 @@ except serial.SerialException as e:
     print(f"Serial Error: {e}")
     ser = None  
 
-# === SERIAL DATA READING FUNCTION ===
 def send_to_serial(message):
     
     if ser:
@@ -92,9 +116,14 @@ def count_fingers(hand_landmarks, handedness):
 def draw_threshold_lines(frame, height, width):
     cv2.line(frame, (0, int(CROUCH_THRESHOLD * height)), (width, int(CROUCH_THRESHOLD * height)), (0, 0, 255), 2)
     cv2.line(frame, (width // 2, 0), (width // 2, height), (255, 255, 0), 2)
+def smooth_position(new_pos, prev_pos):
+    return prev_pos * (1 - SMOOTHING_FACTOR) + new_pos * SMOOTHING_FACTOR if prev_pos else new_pos
 
 def process_frame(frame, pose, hands, prev_hip_y):
-    height = 0 
+ 
+   
+    height, width, _ = frame.shape
+    global left_shoulder_positions, right_shoulder_positions
     jump_ref_y = int(0.1 * height)
     global last_crouch_time, crouch_start_time, crouch_started
     global jump_count, crouch_count, t_pose_count, bend_left_count, bend_right_count
@@ -109,6 +138,41 @@ def process_frame(frame, pose, hands, prev_hip_y):
     if pose_results.pose_landmarks:
         mp_drawing.draw_landmarks(frame, pose_results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
         landmarks = pose_results.pose_landmarks.landmark
+        left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
+        right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER]
+        
+        smoothed_left_shoulder = (smooth_position(left_shoulder.x * width, left_shoulder_positions[-1][0] if left_shoulder_positions else None),
+                                  smooth_position(left_shoulder.y * height, left_shoulder_positions[-1][1] if left_shoulder_positions else None))
+        smoothed_right_shoulder = (smooth_position(right_shoulder.x * width, right_shoulder_positions[-1][0] if right_shoulder_positions else None),
+                                   smooth_position(right_shoulder.y * height, right_shoulder_positions[-1][1] if right_shoulder_positions else None))
+        
+
+        left_shoulder_positions.append((left_shoulder.x * width, left_shoulder.y * height))
+        right_shoulder_positions.append((right_shoulder.x * width, right_shoulder.y * height))
+        
+        if len(left_shoulder_positions) > 20:
+            left_shoulder_positions.pop(0)
+            print(f"Right Shoulder Positions: {right_shoulder_positions}")
+        if len(right_shoulder_positions) > 20:
+            right_shoulder_positions.pop(0)
+            print(f"Left Shoulder Positions: {left_shoulder_positions}")
+        
+        
+
+        if detect_circular_motion(left_shoulder_positions, threshold=3):
+            print("Left Shoulder Circular Motion Detected")
+            cv2.putText(frame, "Left Shoulder Circular Motion", (50, 400), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+
+        if detect_circular_motion(right_shoulder_positions, threshold=3):
+            print("Right Shoulder Circular Motion Detected")
+            cv2.putText(frame, "Right Shoulder Circular Motion", (50, 450), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+    
+        
+        cv2.putText(frame, f"Left Shoulder: X={left_shoulder.x:.2f}, Y={left_shoulder.y:.2f}",
+            (50, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
+        cv2.putText(frame, f"Right Shoulder: X={right_shoulder.x:.2f}, Y={right_shoulder.y:.2f}",
+            (50, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
 
 
         nose_x = int(landmarks[mp_pose.PoseLandmark.NOSE].x * width)
@@ -138,8 +202,7 @@ def process_frame(frame, pose, hands, prev_hip_y):
             
             text_position = (50, 300) if handedness == "Right" else (50, 350)
             send_to_serial("H")
-            cv2.putText(frame, f"{handedness} Hand: {fingers_open} fingers", text_position, cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-
+            cv2.putText(frame, f"{handedness} Hand: {fingers_open} fingers", text_position, cv2.FONT_HERSHEY_SIMPLEX, 1, (20, 10, 0), 2)
 
     if upper_body_center < lower_body_center - 20:
         send_to_serial("L")
@@ -182,12 +245,14 @@ def process_frame(frame, pose, hands, prev_hip_y):
         send_to_serial("T\n")
         t_pose_count += 1
         cv2.putText(frame, f"T-Pose: {t_pose_count}", (width - 250, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
-
     
     return frame
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    global crouch_count  # Reset squat counter
+    crouch_count = 0  
+    
     await websocket.accept()
     cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 680)
@@ -213,7 +278,7 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_json({
                 "image": base64_image,
                 "jump_count": jump_count,
-                "crouch_count": crouch_count,
+                "crouch_count": crouch_count,  # Updated count
                 "tpose_count": t_pose_count,
                 "bend_left_count": bend_left_count,
                 "bend_right_count": bend_right_count
