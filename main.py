@@ -11,14 +11,35 @@ import time
 import threading
 import serial
 import queue
+prev_left_shoulder_angle = None
+prev_right_shoulder_angle = None
+ANGLE_THRESHOLD = 10 
 
 left_shoulder_positions = []
 right_shoulder_positions = []
-DISPLACEMENT_THRESHOLD = 15 
+DISPLACEMENT_THRESHOLD = 10
 SMOOTHING_FACTOR = 0.2 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 frame_queue = queue.Queue(maxsize=5)  
+
+import math
+
+def calculate_angle(a, b, c):
+    """Calculates the angle at point b given three points a, b, and c."""
+    ba = (a[0] - b[0], a[1] - b[1])
+    bc = (c[0] - b[0], c[1] - b[1])
+
+    dot_product = ba[0] * bc[0] + ba[1] * bc[1]
+    magnitude_ba = math.sqrt(ba[0]**2 + ba[1]**2)
+    magnitude_bc = math.sqrt(bc[0]**2 + bc[1]**2)
+
+    if magnitude_ba == 0 or magnitude_bc == 0:
+        return 0  
+
+    angle = math.acos(dot_product / (magnitude_ba * magnitude_bc))
+    return math.degrees(angle)
+
 
 
 # def detect_circular_motion(positions, threshold=5):
@@ -32,14 +53,18 @@ frame_queue = queue.Queue(maxsize=5)
 #     avg_radius = sum(radii) / len(radii)
     
 #     return all(abs(r - avg_radius) < avg_radius * 0.3 for r in radii)  # Increased tolerance
-def detect_circular_motion(positions, threshold=5):
-    if len(positions) < threshold:
+ # Define an appropriate threshold based on pixel movement
+
+def detect_shoulder_movement(positions, min_points=5):
+    if len(positions) < min_points:
         return False
     
     x_disp = abs(positions[-1][0] - positions[0][0])
     y_disp = abs(positions[-1][1] - positions[0][1])
     
     return x_disp > DISPLACEMENT_THRESHOLD and y_disp > DISPLACEMENT_THRESHOLD
+
+
 
 
 def capture_frames(cap):
@@ -121,7 +146,8 @@ def smooth_position(new_pos, prev_pos):
 
 def process_frame(frame, pose, hands, prev_hip_y):
  
-   
+
+    global prev_left_shoulder_angle, prev_right_shoulder_angle
     height, width, _ = frame.shape
     global left_shoulder_positions, right_shoulder_positions
     jump_ref_y = int(0.1 * height)
@@ -138,18 +164,24 @@ def process_frame(frame, pose, hands, prev_hip_y):
     if pose_results.pose_landmarks:
         mp_drawing.draw_landmarks(frame, pose_results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
         landmarks = pose_results.pose_landmarks.landmark
-        left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
-        right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER]
-        
-        smoothed_left_shoulder = (smooth_position(left_shoulder.x * width, left_shoulder_positions[-1][0] if left_shoulder_positions else None),
-                                  smooth_position(left_shoulder.y * height, left_shoulder_positions[-1][1] if left_shoulder_positions else None))
-        smoothed_right_shoulder = (smooth_position(right_shoulder.x * width, right_shoulder_positions[-1][0] if right_shoulder_positions else None),
-                                   smooth_position(right_shoulder.y * height, right_shoulder_positions[-1][1] if right_shoulder_positions else None))
-        
 
-        left_shoulder_positions.append((left_shoulder.x * width, left_shoulder.y * height))
-        right_shoulder_positions.append((right_shoulder.x * width, right_shoulder.y * height))
-        
+        left_shoulder = (landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER].x * width,
+                         landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER].y * height)
+        left_elbow = (landmarks[mp_pose.PoseLandmark.LEFT_ELBOW].x * width,
+                      landmarks[mp_pose.PoseLandmark.LEFT_ELBOW].y * height)
+        left_hip = (landmarks[mp_pose.PoseLandmark.LEFT_HIP].x * width,
+                    landmarks[mp_pose.PoseLandmark.LEFT_HIP].y * height)
+
+        right_shoulder = (landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER].x * width,
+                          landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER].y * height)
+        right_elbow = (landmarks[mp_pose.PoseLandmark.RIGHT_ELBOW].x * width,
+                       landmarks[mp_pose.PoseLandmark.RIGHT_ELBOW].y * height)
+        right_hip = (landmarks[mp_pose.PoseLandmark.RIGHT_HIP].x * width,
+                     landmarks[mp_pose.PoseLandmark.RIGHT_HIP].y * height)
+
+        left_shoulder_angle = calculate_angle(left_elbow, left_shoulder, left_hip)
+        right_shoulder_angle = calculate_angle(right_elbow, right_shoulder, right_hip)
+
         if len(left_shoulder_positions) > 20:
             left_shoulder_positions.pop(0)
             print(f"Right Shoulder Positions: {right_shoulder_positions}")
@@ -158,21 +190,26 @@ def process_frame(frame, pose, hands, prev_hip_y):
             print(f"Left Shoulder Positions: {left_shoulder_positions}")
         
         
+        if prev_left_shoulder_angle is not None:
+            if abs(left_shoulder_angle - prev_left_shoulder_angle) > ANGLE_THRESHOLD:
+                print("Right Shoulder Movement Detected")
+                cv2.putText(frame, "Right Shoulder's circular Movement", (50, 400), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
 
-        if detect_circular_motion(left_shoulder_positions, threshold=3):
-            print("Left Shoulder Circular Motion Detected")
-            cv2.putText(frame, "Left Shoulder Circular Motion", (50, 400), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-
-        if detect_circular_motion(right_shoulder_positions, threshold=3):
-            print("Right Shoulder Circular Motion Detected")
-            cv2.putText(frame, "Right Shoulder Circular Motion", (50, 450), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-    
+        if prev_right_shoulder_angle is not None:
+            if abs(right_shoulder_angle - prev_right_shoulder_angle) > ANGLE_THRESHOLD:
+                print("LEFT Shoulder Movement Detected")
+                cv2.putText(frame, "LEFT Shoulder's circular Movement", (50, 450), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
         
-        cv2.putText(frame, f"Left Shoulder: X={left_shoulder.x:.2f}, Y={left_shoulder.y:.2f}",
-            (50, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        prev_left_shoulder_angle = left_shoulder_angle
+        prev_right_shoulder_angle = right_shoulder_angle
+        
+        cv2.putText(frame, f"Left Shoulder: X={left_shoulder[0]:.2f}, Y={left_shoulder[1]:.2f}",
 
-        cv2.putText(frame, f"Right Shoulder: X={right_shoulder.x:.2f}, Y={right_shoulder.y:.2f}",
-            (50, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+            (40, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
+        cv2.putText(frame, f"Right Shoulder: X={right_shoulder[0]:.2f}, Y={right_shoulder[1]:.2f}",
+
+            (38, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 110, 255), 2)
 
 
         nose_x = int(landmarks[mp_pose.PoseLandmark.NOSE].x * width)
